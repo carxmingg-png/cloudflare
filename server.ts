@@ -1659,15 +1659,11 @@ export function modifyProfile(base: any, mods: {
   inject_cars?: string[];
 }, userId?: string) {
   let profile: any;
-  // isFresh: use template as structural base when profile has no top-level resources.
-  // The template structure is required for the game to load properly.
-  // We fix the value overwrite problem separately in the resources seeding below.
-  const isFresh = !base || Object.keys(base).length === 0 || !base.resources;
+  // ONLY use template when safe_repair is explicitly requested or base is completely null/empty
+  const isFresh = !base || typeof base !== "object" || Object.keys(base).length === 0;
 
   // Extract real player values BEFORE potentially replacing the base with the template.
-  // This preserves the player's actual cash/gold/level/exp when the profile structure
-  // needs the template as a base (e.g. resources stored in a nested path).
-  const existingStats = (base && Object.keys(base).length > 0) ? extractProfileStats(base, false) : null;
+  const existingStats = (base && typeof base === "object" && Object.keys(base).length > 0) ? extractProfileStats(base, false) : null;
 
   if (mods.safe_repair || isFresh) {
     profile = structuredClone(PROFILE_TEMPLATE || {});
@@ -1677,11 +1673,8 @@ export function modifyProfile(base: any, mods: {
 
   profile.date_time = new Date().toISOString().replace("T", " ").substring(0, 19);
 
-  // Removed user ID fields injection at root level of profile to prevent game client JSON deserialization errors/crashes
-
-
-  // Ensure inner resources exist.
-  if (!profile.resources) {
+  // Ensure inner resources exist safely without wiping profile structure
+  if (!profile.resources || typeof profile.resources !== "object") {
     profile.resources = PROFILE_TEMPLATE ? structuredClone(PROFILE_TEMPLATE.resources) : {
       soft: { amount: 0 },
       hard: { amount: 0 },
@@ -1692,9 +1685,7 @@ export function modifyProfile(base: any, mods: {
   if (!profile.resources.hard) profile.resources.hard = { amount: 0 };
   if (!profile.resources.experience) profile.resources.experience = { award_index: 1, amount: 0 };
 
-  // If we used the template as a base for a real (non-repair) account, restore the
-  // player's actual resource values so we don't overwrite them with template defaults.
-  // If no existingStats is available (truly fresh account), use starter values (21000 cash, 0 gold, level 1, 0 exp).
+  // If we used the template as a base for a truly empty fresh account, set default starter values
   if (isFresh && !mods.safe_repair) {
     const defaultCash = (existingStats && existingStats.cash > 0) ? existingStats.cash : 21000;
     const defaultGold = existingStats ? existingStats.gold : 0;
@@ -1715,19 +1706,21 @@ export function modifyProfile(base: any, mods: {
     }
   }
 
-  // Soft/Cash
+  // Soft/Cash - granular injection
   if (mods.cash !== undefined) {
-    let cashVal = mods.cash;
+    let cashVal = Number(mods.cash);
+    if (isNaN(cashVal)) cashVal = 0;
     if (cashVal > 2140000000) cashVal = 2140000000;
     profile.resources.soft.amount = cashVal;
   }
-  // Hard/Gold
+  // Hard/Gold - granular injection
   if (mods.gold !== undefined) {
-    let goldVal = parseFloat(mods.gold as any);
+    let goldVal = Number(mods.gold);
+    if (isNaN(goldVal)) goldVal = 0;
     if (goldVal > 2140000000) goldVal = 2140000000;
     profile.resources.hard.amount = goldVal;
   }
-  // Level & XP
+  // Level & XP - granular injection
   if (mods.level !== undefined) {
     profile.resources.experience.award_index = mods.level;
   }
@@ -1900,8 +1893,8 @@ export function modifyProfile(base: any, mods: {
       profile.current_car_id = typeof profile.current_car_id === "number" ? parseInt(activeCarId, 10) : activeCarId;
     }
   } else {
-    if (isFresh || mods.safe_repair) {
-      console.log("[MODIFY PROFILE] Fresh or repair profile detected without get_all_cars. Keeping only S90 (toyotasupra2020) as active car.");
+    if (mods.safe_repair && isFresh) {
+      console.log("[MODIFY PROFILE] Fresh repair profile detected without get_all_cars. Keeping only S90 (toyotasupra2020) as active car.");
       const carsItems = profile.cars?.items || {};
       let s90Key = "1000";
       for (const carId in carsItems) {
