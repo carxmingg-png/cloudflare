@@ -1659,11 +1659,15 @@ export function modifyProfile(base: any, mods: {
   inject_cars?: string[];
 }, userId?: string) {
   let profile: any;
-  // ONLY use template when safe_repair is explicitly requested or base is completely null/empty
-  const isFresh = !base || typeof base !== "object" || Object.keys(base).length === 0;
+  // isFresh: use template as structural base when profile has no top-level resources.
+  // The template structure is required for the game to load properly.
+  // We fix the value overwrite problem separately in the resources seeding below.
+  const isFresh = !base || Object.keys(base).length === 0 || !base.resources;
 
   // Extract real player values BEFORE potentially replacing the base with the template.
-  const existingStats = (base && typeof base === "object" && Object.keys(base).length > 0) ? extractProfileStats(base, false) : null;
+  // This preserves the player's actual cash/gold/level/exp when the profile structure
+  // needs the template as a base (e.g. resources stored in a nested path).
+  const existingStats = (base && Object.keys(base).length > 0) ? extractProfileStats(base, false) : null;
 
   if (mods.safe_repair || isFresh) {
     profile = structuredClone(PROFILE_TEMPLATE || {});
@@ -1673,8 +1677,11 @@ export function modifyProfile(base: any, mods: {
 
   profile.date_time = new Date().toISOString().replace("T", " ").substring(0, 19);
 
-  // Ensure inner resources exist safely without wiping profile structure
-  if (!profile.resources || typeof profile.resources !== "object") {
+  // Removed user ID fields injection at root level of profile to prevent game client JSON deserialization errors/crashes
+
+
+  // Ensure inner resources exist.
+  if (!profile.resources) {
     profile.resources = PROFILE_TEMPLATE ? structuredClone(PROFILE_TEMPLATE.resources) : {
       soft: { amount: 0 },
       hard: { amount: 0 },
@@ -1685,7 +1692,9 @@ export function modifyProfile(base: any, mods: {
   if (!profile.resources.hard) profile.resources.hard = { amount: 0 };
   if (!profile.resources.experience) profile.resources.experience = { award_index: 1, amount: 0 };
 
-  // If we used the template as a base for a truly empty fresh account, set default starter values
+  // If we used the template as a base for a real (non-repair) account, restore the
+  // player's actual resource values so we don't overwrite them with template defaults.
+  // If no existingStats is available (truly fresh account), use starter values (21000 cash, 0 gold, level 1, 0 exp).
   if (isFresh && !mods.safe_repair) {
     const defaultCash = (existingStats && existingStats.cash > 0) ? existingStats.cash : 21000;
     const defaultGold = existingStats ? existingStats.gold : 0;
@@ -1706,21 +1715,19 @@ export function modifyProfile(base: any, mods: {
     }
   }
 
-  // Soft/Cash - granular injection
+  // Soft/Cash
   if (mods.cash !== undefined) {
-    let cashVal = Number(mods.cash);
-    if (isNaN(cashVal)) cashVal = 0;
+    let cashVal = mods.cash;
     if (cashVal > 2140000000) cashVal = 2140000000;
     profile.resources.soft.amount = cashVal;
   }
-  // Hard/Gold - granular injection
+  // Hard/Gold
   if (mods.gold !== undefined) {
-    let goldVal = Number(mods.gold);
-    if (isNaN(goldVal)) goldVal = 0;
+    let goldVal = parseFloat(mods.gold as any);
     if (goldVal > 2140000000) goldVal = 2140000000;
     profile.resources.hard.amount = goldVal;
   }
-  // Level & XP - granular injection
+  // Level & XP
   if (mods.level !== undefined) {
     profile.resources.experience.award_index = mods.level;
   }
@@ -1772,81 +1779,46 @@ export function modifyProfile(base: any, mods: {
     });
   }
 
-  // Cars injection & real estate slot mapping (matching python implant_cars_only logic)
+  // Cars injection & real estate slot mapping (matching RRTbot exactly)
   if (mods.get_all_cars) {
     console.log("[MODIFY PROFILE] Injecting 86 catalog cars (preserving original customizations)...");
-    
-    // Get existing cars
-    const existing_cars: Record<string, any> = isFresh ? {} : (profile.cars?.items || {});
-
-    // Track existing models to avoid duplicates
-    const existing_models = new Set<string>();
-    for (const car of Object.values(existing_cars)) {
-      if (car && typeof car === "object") {
-        const desc = (car as any).__desc_id;
-        if (desc) {
-          existing_models.add(desc);
-        }
-      }
+    if (isFresh) {
+      profile.cars = { seed: 1000, items: {} };
+    } else {
+      profile.cars = profile.cars || { seed: 0, items: {} };
+      profile.cars.items = profile.cars.items || {};
     }
 
-    // Find max existing item ID
-    let max_id = 1000;
-    for (const car_id of Object.keys(existing_cars)) {
-      try {
-        const cid = parseInt(car_id, 10);
-        if (!isNaN(cid) && cid > max_id) {
-          max_id = cid;
-        }
-      } catch {}
-    }
-
-    // Add new cars
-    let new_cars_added = 0;
-    const skipped: string[] = [];
+    const existingDescIds = new Set(
+      Object.values(profile.cars.items)
+        .map((item: any) => item?.__desc_id)
+        .filter(Boolean)
+    );
 
     for (let i = 0; i < CATALOG_86_CARS.length; i++) {
       const descId = CATALOG_86_CARS[i];
-      if (!descId) continue;
-
-      // Skip if target already has this model
-      if (existing_models.has(descId)) {
-        skipped.push(descId);
-        continue;
-      }
-
-      let carObj: any = null;
-      if (PREMIUM_BUILDS && PREMIUM_BUILDS[descId]) {
-        carObj = structuredClone(PREMIUM_BUILDS[descId]);
-      } else if (PROFILE_TEMPLATE && PROFILE_TEMPLATE.cars && PROFILE_TEMPLATE.cars.items) {
-        for (const k in PROFILE_TEMPLATE.cars.items) {
-          if (PROFILE_TEMPLATE.cars.items[k]?.__desc_id === descId) {
-            carObj = structuredClone(PROFILE_TEMPLATE.cars.items[k]);
-            break;
+      if (!existingDescIds.has(descId)) {
+        let carObj: any = null;
+        if (PREMIUM_BUILDS && PREMIUM_BUILDS[descId]) {
+          carObj = structuredClone(PREMIUM_BUILDS[descId]);
+        } else if (PROFILE_TEMPLATE && PROFILE_TEMPLATE.cars && PROFILE_TEMPLATE.cars.items) {
+          for (const k in PROFILE_TEMPLATE.cars.items) {
+            if (PROFILE_TEMPLATE.cars.items[k].__desc_id === descId) {
+              carObj = structuredClone(PROFILE_TEMPLATE.cars.items[k]);
+              break;
+            }
           }
         }
-      }
 
-      if (carObj) {
-        max_id += 1;
-        const new_car = structuredClone(carObj);
-        new_car.__desc_id = descId;
-        existing_cars[max_id.toString()] = new_car;
-        existing_models.add(descId);
-        new_cars_added += 1;
+        if (carObj) {
+          carObj.__desc_id = descId;
+          const existingIds = Object.keys(profile.cars.items).map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+          const newId = existingIds.length > 0 ? (Math.max(...existingIds) + 1).toString() : (1000 + i).toString();
+          profile.cars.items[newId] = carObj;
+          existingDescIds.add(descId);
+        }
       }
     }
-
-    console.log(`[MODIFY PROFILE] Added ${new_cars_added} new cars`);
-    if (skipped.length > 0) {
-      console.log(`[MODIFY PROFILE] Skipped (already owned): ${Array.from(new Set(skipped)).join(", ")}`);
-    }
-
-    // Update only the cars section - keep everything else as-is
-    profile.cars = {
-      seed: Math.max(1000, max_id + 1),
-      items: existing_cars
-    };
 
     if (mods.unlock_houses || mods.get_all_cars) {
       console.log("[MODIFY PROFILE] Unlocking all houses...");
@@ -1885,7 +1857,7 @@ export function modifyProfile(base: any, mods: {
     if (!currentCarExists && carIds.length > 0) {
       let activeCarId = carIds[0];
       for (const carId of carIds) {
-        if (carsItems[carId]?.__desc_id === "toyotasupra2020") {
+        if (carsItems[carId].__desc_id === "toyotasupra2020") {
           activeCarId = carId;
           break;
         }
@@ -1893,12 +1865,12 @@ export function modifyProfile(base: any, mods: {
       profile.current_car_id = typeof profile.current_car_id === "number" ? parseInt(activeCarId, 10) : activeCarId;
     }
   } else {
-    if (mods.safe_repair && isFresh) {
-      console.log("[MODIFY PROFILE] Fresh repair profile detected without get_all_cars. Keeping only S90 (toyotasupra2020) as active car.");
+    if (isFresh || mods.safe_repair) {
+      console.log("[MODIFY PROFILE] Fresh or repair profile detected without get_all_cars. Keeping only S90 (toyotasupra2020) as active car.");
       const carsItems = profile.cars?.items || {};
       let s90Key = "1000";
       for (const carId in carsItems) {
-        if (carsItems[carId]?.__desc_id === "toyotasupra2020") {
+        if (carsItems[carId].__desc_id === "toyotasupra2020") {
           s90Key = carId;
           break;
         }
@@ -1929,16 +1901,8 @@ export function modifyProfile(base: any, mods: {
   // Single / Multiple / Random Cars Injections
   if (mods.inject_car) {
     console.log(`[MODIFY PROFILE] Injecting single car: ${mods.inject_car}...`);
-    const existing_cars: Record<string, any> = profile.cars?.items || {};
-    let max_id = 1000;
-    for (const car_id of Object.keys(existing_cars)) {
-      try {
-        const cid = parseInt(car_id, 10);
-        if (!isNaN(cid) && cid > max_id) {
-          max_id = cid;
-        }
-      } catch {}
-    }
+    profile.cars = profile.cars || { seed: 0, items: {} };
+    profile.cars.items = profile.cars.items || {};
 
     const baseCarId = mods.inject_car.replace(/_sp[12]/g, "");
     let carTemplateObj: any = null;
@@ -1947,7 +1911,7 @@ export function modifyProfile(base: any, mods: {
       carTemplateObj = structuredClone(PREMIUM_BUILDS[baseCarId]);
     } else if (PROFILE_TEMPLATE && PROFILE_TEMPLATE.cars && PROFILE_TEMPLATE.cars.items) {
       for (const cid in PROFILE_TEMPLATE.cars.items) {
-        if (PROFILE_TEMPLATE.cars.items[cid]?.__desc_id === baseCarId) {
+        if (PROFILE_TEMPLATE.cars.items[cid].__desc_id === baseCarId) {
           carTemplateObj = structuredClone(PROFILE_TEMPLATE.cars.items[cid]);
           break;
         }
@@ -1955,16 +1919,10 @@ export function modifyProfile(base: any, mods: {
     }
 
     if (carTemplateObj) {
-      max_id += 1;
-      const new_car = structuredClone(carTemplateObj);
-      new_car.__desc_id = baseCarId;
-      const newId = max_id.toString();
-      existing_cars[newId] = new_car;
-
-      profile.cars = {
-        seed: Math.max(1000, max_id + 1),
-        items: existing_cars
-      };
+      carTemplateObj.__desc_id = baseCarId;
+      const existingIds = Object.keys(profile.cars.items).map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+      const newId = existingIds.length > 0 ? (Math.max(...existingIds) + 1).toString() : "1001";
+      profile.cars.items[newId] = carTemplateObj;
 
       if (!profile.current_car_id || !profile.cars.items[profile.current_car_id.toString()]) {
         profile.current_car_id = typeof profile.current_car_id === "number" ? parseInt(newId, 10) : newId;
@@ -1975,24 +1933,8 @@ export function modifyProfile(base: any, mods: {
 
   if (mods.inject_cars && Array.isArray(mods.inject_cars)) {
     console.log(`[MODIFY PROFILE] Injecting multiple cars: ${mods.inject_cars.join(", ")}...`);
-    const existing_cars: Record<string, any> = profile.cars?.items || {};
-    const existing_models = new Set<string>();
-    for (const car of Object.values(existing_cars)) {
-      if (car && typeof car === "object") {
-        const desc = (car as any).__desc_id;
-        if (desc) existing_models.add(desc);
-      }
-    }
-
-    let max_id = 1000;
-    for (const car_id of Object.keys(existing_cars)) {
-      try {
-        const cid = parseInt(car_id, 10);
-        if (!isNaN(cid) && cid > max_id) {
-          max_id = cid;
-        }
-      } catch {}
-    }
+    profile.cars = profile.cars || { seed: 0, items: {} };
+    profile.cars.items = profile.cars.items || {};
 
     let lastNewId = "";
     for (const carId of mods.inject_cars) {
@@ -2003,7 +1945,7 @@ export function modifyProfile(base: any, mods: {
         carTemplateObj = structuredClone(PREMIUM_BUILDS[baseCarId]);
       } else if (PROFILE_TEMPLATE && PROFILE_TEMPLATE.cars && PROFILE_TEMPLATE.cars.items) {
         for (const cid in PROFILE_TEMPLATE.cars.items) {
-          if (PROFILE_TEMPLATE.cars.items[cid]?.__desc_id === baseCarId) {
+          if (PROFILE_TEMPLATE.cars.items[cid].__desc_id === baseCarId) {
             carTemplateObj = structuredClone(PROFILE_TEMPLATE.cars.items[cid]);
             break;
           }
@@ -2011,21 +1953,14 @@ export function modifyProfile(base: any, mods: {
       }
 
       if (carTemplateObj) {
-        max_id += 1;
-        const new_car = structuredClone(carTemplateObj);
-        new_car.__desc_id = baseCarId;
-        const newId = max_id.toString();
-        existing_cars[newId] = new_car;
-        existing_models.add(baseCarId);
+        carTemplateObj.__desc_id = baseCarId;
+        const existingIds = Object.keys(profile.cars.items).map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        const newId = existingIds.length > 0 ? (Math.max(...existingIds) + 1).toString() : "1001";
+        profile.cars.items[newId] = carTemplateObj;
         lastNewId = newId;
         assignCarToFreeSlot(profile, newId, PROFILE_TEMPLATE?.real_estate_slots);
       }
     }
-
-    profile.cars = {
-      seed: Math.max(1000, max_id + 1),
-      items: existing_cars
-    };
 
     if (lastNewId && (!profile.current_car_id || !profile.cars.items[profile.current_car_id.toString()])) {
       profile.current_car_id = typeof profile.current_car_id === "number" ? parseInt(lastNewId, 10) : lastNewId;
@@ -2034,26 +1969,16 @@ export function modifyProfile(base: any, mods: {
 
   if (mods.random_cars_count && mods.random_cars_count > 0) {
     console.log(`[MODIFY PROFILE] Injecting ${mods.random_cars_count} random cars...`);
-    const existing_cars: Record<string, any> = profile.cars?.items || {};
-    const existing_models = new Set<string>();
-    for (const car of Object.values(existing_cars)) {
-      if (car && typeof car === "object") {
-        const desc = (car as any).__desc_id;
-        if (desc) existing_models.add(desc);
-      }
-    }
+    profile.cars = profile.cars || { seed: 0, items: {} };
+    profile.cars.items = profile.cars.items || {};
 
-    let max_id = 1000;
-    for (const car_id of Object.keys(existing_cars)) {
-      try {
-        const cid = parseInt(car_id, 10);
-        if (!isNaN(cid) && cid > max_id) {
-          max_id = cid;
-        }
-      } catch {}
-    }
+    const existingDescIds = new Set(
+      Object.values(profile.cars.items)
+        .map((item: any) => item?.__desc_id)
+        .filter(Boolean)
+    );
 
-    const availableCars = CATALOG_86_CARS.filter(c => !existing_models.has(c));
+    const availableCars = CATALOG_86_CARS.filter(c => !existingDescIds.has(c));
     const toInject = availableCars.slice(0, mods.random_cars_count);
 
     for (let i = 0; i < toInject.length; i++) {
@@ -2063,7 +1988,7 @@ export function modifyProfile(base: any, mods: {
         carObj = structuredClone(PREMIUM_BUILDS[descId]);
       } else if (PROFILE_TEMPLATE && PROFILE_TEMPLATE.cars && PROFILE_TEMPLATE.cars.items) {
         for (const k in PROFILE_TEMPLATE.cars.items) {
-          if (PROFILE_TEMPLATE.cars.items[k]?.__desc_id === descId) {
+          if (PROFILE_TEMPLATE.cars.items[k].__desc_id === descId) {
             carObj = structuredClone(PROFILE_TEMPLATE.cars.items[k]);
             break;
           }
@@ -2071,20 +1996,13 @@ export function modifyProfile(base: any, mods: {
       }
 
       if (carObj) {
-        max_id += 1;
-        const new_car = structuredClone(carObj);
-        new_car.__desc_id = descId;
-        const newId = max_id.toString();
-        existing_cars[newId] = new_car;
-        existing_models.add(descId);
+        carObj.__desc_id = descId;
+        const existingIds = Object.keys(profile.cars.items).map(id => parseInt(id, 10)).filter(id => !isNaN(id));
+        const newId = existingIds.length > 0 ? (Math.max(...existingIds) + 1).toString() : (1001 + i).toString();
+        profile.cars.items[newId] = carObj;
         assignCarToFreeSlot(profile, newId, PROFILE_TEMPLATE?.real_estate_slots);
       }
     }
-
-    profile.cars = {
-      seed: Math.max(1000, max_id + 1),
-      items: existing_cars
-    };
   }
 
   // Ensure car_to_real_estate_slot is strictly clean
