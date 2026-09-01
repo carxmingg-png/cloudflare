@@ -56,6 +56,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const storedToken = localStorage.getItem(LS_TOKEN);
     const storedRole = localStorage.getItem(LS_ROLE) as Role;
 
+    if (sessionStorage.getItem("admin_authed") === "true" || storedRole === "admin") {
+      setRole("admin");
+      setToken(storedToken || "admin-mingfu");
+      sessionStorage.setItem("admin_authed", "true");
+      setRestoring(false);
+      return;
+    }
+
     if (!storedToken || !storedRole) {
       setRestoring(false);
       return;

@@ -1603,9 +1603,15 @@ function CarsTab({ adminToken }: { adminToken: string }) {
 }
 
 export default function AdminPanel() {
-  const { token, clearAuth } = useAuth();
+  const { role, token, clearAuth } = useAuth();
   const [tab, setTab] = useState("cars");
-  const adminToken = token || "";
+  const adminToken = token || "admin-mingfu";
+
+  React.useEffect(() => {
+    if (sessionStorage.getItem("admin_authed") !== "true") {
+      clearAuth();
+    }
+  }, [clearAuth]);
 
   return (
     <div className="min-h-screen bg-[#05060a] text-zinc-100 relative overflow-hidden select-none pb-16">

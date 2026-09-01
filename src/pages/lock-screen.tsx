@@ -35,10 +35,23 @@ export default function LockScreen() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!key.trim()) return;
+    const entered = key.trim();
+    if (!entered) return;
     setError(null);
     setShowTelegram(false);
-    verify.mutate({ data: { key: key.trim() } });
+
+    // The correct admin key
+    const ADMIN_KEY = "admin-mingfu";
+
+    // Compare: trimmed + case-insensitive
+    if (entered.toLowerCase() === ADMIN_KEY.trim().toLowerCase()) {
+      sessionStorage.setItem("admin_authed", "true");
+      setAuth("admin", ADMIN_KEY);
+      return;
+    }
+
+    // Otherwise verify user key via API
+    verify.mutate({ data: { key: entered } });
   };
 
   return (
@@ -95,6 +108,7 @@ export default function LockScreen() {
               </label>
               <div className="relative">
                 <input
+                  id="keyInput"
                   data-testid="input-access-key"
                   type="text"
                   value={key}
