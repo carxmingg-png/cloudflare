@@ -3,7 +3,7 @@ services:
     name: myanmar-carx-street
     env: node
     plan: free
-    buildCommand: npm install --include=dev && npm run build
+    buildCommand: npm install --include=dev && npm run build:full
     startCommand: npm start
     envVars:
       - key: NODE_ENV
