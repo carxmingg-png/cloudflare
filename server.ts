@@ -247,10 +247,11 @@ const ALL_CAR_MODELS = [
 
 let mongoClient: any = null;
 async function getMongoClient() {
-  if (process.env.MONGODB_URI) {
+  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
+  if (mongoUri) {
     if (!mongoClient) {
       try {
-        mongoClient = new MongoClient(process.env.MONGODB_URI);
+        mongoClient = new MongoClient(mongoUri);
         await mongoClient.connect();
         console.log("[DB] Connected to MongoDB successfully.");
       } catch (err) {
@@ -347,6 +348,39 @@ async function loadKeysDb(forceRefresh = false) {
     }
   }
 
+  // 3. Try Cloudflare KV REST API
+  const cfAccountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const cfNamespaceId = process.env.CF_KV_NAMESPACE_ID || process.env.CLOUDFLARE_KV_NAMESPACE_ID;
+  const cfApiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+
+  if (cfAccountId && cfNamespaceId && cfApiToken) {
+    try {
+      const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/storage/kv/namespaces/${cfNamespaceId}/values/rymenbot_keys_db`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${cfApiToken}` }
+      });
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const parsed = JSON.parse(text);
+          const result = {
+            keys: parsed.keys || {},
+            authorized_users: parsed.authorized_users || {},
+            admins: parsed.admins || [],
+            owners: parsed.owners || [],
+            total_credits_used: parsed.total_credits_used || 0,
+            total_accounts_generated: parsed.total_accounts_generated || 0
+          };
+          _dbCache = result;
+          _dbCacheAt = now;
+          return result;
+        }
+      }
+    } catch (err) {
+      console.error("[DB ERROR] Failed to load keys from Cloudflare KV:", err);
+    }
+  }
+
   // 3. Fallback to Local Filesystem
   const filePath = getKeysFilePath();
   if (fs.existsSync(filePath)) {
@@ -439,6 +473,31 @@ async function saveKeysDb(db: any) {
       }
     } catch (err) {
       console.error("[DB ERROR] Failed to save keys to Vercel KV:", err);
+    }
+  }
+
+  // 3. Try Cloudflare KV REST API
+  const cfAccountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const cfNamespaceId = process.env.CF_KV_NAMESPACE_ID || process.env.CLOUDFLARE_KV_NAMESPACE_ID;
+  const cfApiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+
+  if (!savedToDb && cfAccountId && cfNamespaceId && cfApiToken) {
+    try {
+      const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/storage/kv/namespaces/${cfNamespaceId}/values/rymenbot_keys_db`;
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${cfApiToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(cleanDb)
+      });
+      if (res.ok) {
+        console.log("[DB] Successfully saved keys to Cloudflare KV.");
+        savedToDb = true;
+      }
+    } catch (err) {
+      console.error("[DB ERROR] Failed to save keys to Cloudflare KV:", err);
     }
   }
 
