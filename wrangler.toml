@@ -3,10 +3,6 @@ main = "worker.js"
 compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]
 
-[[kv_namespaces]]
-binding = "KEYS_KV"
-id = "KEYS_KV"
-
 [build]
 command = "npm run build"
 
